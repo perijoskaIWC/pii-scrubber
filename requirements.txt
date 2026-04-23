@@ -1,0 +1,23 @@
+# Uncomment to enable Azure Monitor OpenTelemetry
+# Ref: aka.ms/functions-azure-monitor-python
+# azure-monitor-opentelemetry
+
+azure-functions
+
+# PII redaction (Presidio runs inside the function — no external API call)
+presidio-analyzer==2.2.354
+presidio-anonymizer==2.2.354
+# spaCy 3.7.x has pre-built wheels for Python 3.11 (matches Azure Linux runtime).
+# If you are on a different Python version locally, install the latest spaCy:
+#   pip install spacy
+spacy>=3.7.0,<3.8.0
+
+# ── spaCy English model ────────────────────────────────────────────────────
+# Azure deployment: the wheel below is bundled so no internet access is needed
+# at runtime. Pin matches spacy 3.7.x above.
+#
+# Local dev (Python 3.11):
+#   python -m spacy download en_core_web_lg
+#
+# If the wheel URL causes issues locally, comment it out and run the command above.
+https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.7.1/en_core_web_lg-3.7.1-py3-none-any.whl

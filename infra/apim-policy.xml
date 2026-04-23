@@ -1,0 +1,151 @@
+<!--
+  APIM Inbound Policy — PII Scrub + Tenant Context Injection
+  ==========================================================
+  Applied at: API or Operation level on the LLM-facing API.
+
+  Prerequisites (set up by deploy.ps1):
+    Named Value  {{func-scrub-url}}          = https://fun-dev-aigw.azurewebsites.net/api/scrub
+    Named Value  {{func-tenant-context-url}} = https://fun-dev-aigw.azurewebsites.net/api/tenant-context
+    Named Value  {{func-host-key}}           = <function app host key from Key Vault>
+
+  Flow:
+    1. Extract last user message content from OpenAI messages array
+    2. POST to /api/scrub  → get scrubbed_text
+    3. Replace original content with scrubbed_text in the request body
+    4. POST to /api/tenant-context with APIM subscription headers
+    5. Forward enriched body to backend LLM
+-->
+<policies>
+  <inbound>
+    <base />
+
+    <!-- ── Step 1: Capture original body ──────────────────────────────────── -->
+    <set-variable name="originalBody"
+                  value="@(context.Request.Body.As<string>(preserveContent: true))" />
+
+    <!-- ── Step 2: Extract last user message content ──────────────────────── -->
+    <set-variable name="userContent" value="@{
+      try {
+        var body = Newtonsoft.Json.Linq.JObject.Parse(
+          (string)context.Variables[&quot;originalBody&quot;]);
+        var messages = body[&quot;messages&quot;] as Newtonsoft.Json.Linq.JArray;
+        if (messages != null) {
+          for (int i = messages.Count - 1; i >= 0; i--) {
+            if (messages[i][&quot;role&quot;]?.ToString() == &quot;user&quot;) {
+              return messages[i][&quot;content&quot;]?.ToString() ?? &quot;&quot;;
+            }
+          }
+        }
+      } catch {}
+      return (string)context.Variables[&quot;originalBody&quot;];
+    }" />
+
+    <!-- ── Step 3: Call PII Scrub function ────────────────────────────────── -->
+    <send-request mode="new"
+                  response-variable-name="scrubResponse"
+                  timeout="15"
+                  ignore-error="false">
+      <set-url>@($"{{{{func-scrub-url}}}}?code={{{{func-host-key}}}}")</set-url>
+      <set-method>POST</set-method>
+      <set-header name="Content-Type" exists-action="override">
+        <value>application/json</value>
+      </set-header>
+      <set-header name="x-correlation-id" exists-action="override">
+        <value>@(context.RequestId.ToString())</value>
+      </set-header>
+      <set-body>@{
+        var payload = new Newtonsoft.Json.Linq.JObject();
+        payload["text"] = (string)context.Variables["userContent"];
+        return payload.ToString(Newtonsoft.Json.Formatting.None);
+      }</set-body>
+    </send-request>
+
+    <!-- ── Step 4: Handle scrub failure based on PII_FAILURE_MODE ─────────── -->
+    <choose>
+      <when condition="@(((IResponse)context.Variables["scrubResponse"]).StatusCode >= 400)">
+        <!-- Function returned an error (block mode) — reject the request -->
+        <return-response>
+          <set-status code="422" reason="Unprocessable Content" />
+          <set-header name="Content-Type" exists-action="override">
+            <value>application/json</value>
+          </set-header>
+          <set-body>{"error":"PII redaction failed. Request blocked by gateway policy."}</set-body>
+        </return-response>
+      </when>
+    </choose>
+
+    <!-- ── Step 5: Extract scrubbed_text from response ────────────────────── -->
+    <set-variable name="scrubbedText" value="@{
+      var respBody = ((IResponse)context.Variables[&quot;scrubResponse&quot;])
+                       .Body.As&lt;string&gt;();
+      try {
+        var obj = Newtonsoft.Json.Linq.JObject.Parse(respBody);
+        return obj[&quot;scrubbed_text&quot;]?.ToString()
+               ?? (string)context.Variables[&quot;userContent&quot;];
+      } catch {
+        return (string)context.Variables[&quot;userContent&quot;];
+      }
+    }" />
+
+    <!-- ── Step 6: Rebuild body with scrubbed content ─────────────────────── -->
+    <set-variable name="scrubbedBody" value="@{
+      try {
+        var body = Newtonsoft.Json.Linq.JObject.Parse(
+          (string)context.Variables[&quot;originalBody&quot;]);
+        var messages = body[&quot;messages&quot;] as Newtonsoft.Json.Linq.JArray;
+        if (messages != null) {
+          for (int i = messages.Count - 1; i >= 0; i--) {
+            if (messages[i][&quot;role&quot;]?.ToString() == &quot;user&quot;) {
+              messages[i][&quot;content&quot;] = (string)context.Variables[&quot;scrubbedText&quot;];
+              break;
+            }
+          }
+          return body.ToString(Newtonsoft.Json.Formatting.None);
+        }
+      } catch {}
+      return (string)context.Variables[&quot;originalBody&quot;];
+    }" />
+
+    <!-- ── Step 7: Call Tenant Context function ───────────────────────────── -->
+    <send-request mode="new"
+                  response-variable-name="tenantCtxResponse"
+                  timeout="10"
+                  ignore-error="false">
+      <set-url>@($"{{{{func-tenant-context-url}}}}?code={{{{func-host-key}}}}")</set-url>
+      <set-method>POST</set-method>
+      <set-header name="Content-Type" exists-action="override">
+        <value>application/json</value>
+      </set-header>
+      <set-header name="x-correlation-id" exists-action="override">
+        <value>@(context.RequestId.ToString())</value>
+      </set-header>
+      <!-- APIM subscription / tenant metadata injected here -->
+      <set-header name="x-subscription-id" exists-action="override">
+        <value>@(context.Subscription.Id)</value>
+      </set-header>
+      <set-header name="x-tenant-id" exists-action="override">
+        <value>@(context.Subscription.OwnerId)</value>
+      </set-header>
+      <set-header name="x-product-name" exists-action="override">
+        <value>@(context.Product?.Name ?? "unknown")</value>
+      </set-header>
+      <set-header name="x-user-id" exists-action="override">
+        <value>@(context.User?.Id ?? "unknown")</value>
+      </set-header>
+      <set-body>@((string)context.Variables["scrubbedBody"])</set-body>
+    </send-request>
+
+    <!-- ── Step 8: Forward enriched body to backend LLM ──────────────────── -->
+    <set-body>@(((IResponse)context.Variables["tenantCtxResponse"]).Body.As<string>())</set-body>
+
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>
