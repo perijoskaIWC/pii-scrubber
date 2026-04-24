@@ -121,10 +121,10 @@
       </set-header>
       <!-- APIM subscription / tenant metadata injected here -->
       <set-header name="x-subscription-id" exists-action="override">
-        <value>@(context.Subscription.Id)</value>
+        <value>@(context.Subscription?.Id ?? "unknown")</value>
       </set-header>
       <set-header name="x-tenant-id" exists-action="override">
-        <value>@(context.Subscription.OwnerId)</value>
+        <value>@(context.Product?.Id ?? context.Subscription?.Name ?? "unknown")</value>
       </set-header>
       <set-header name="x-product-name" exists-action="override">
         <value>@(context.Product?.Name ?? "unknown")</value>
