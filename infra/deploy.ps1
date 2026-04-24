@@ -177,7 +177,7 @@ if ($OperationId) {
 }
 
 # Write raw XML to a temp file and PUT with the APIM raw-XML content type.
-# This avoids JSON escaping issues with the policy XML.
+# Use "*" as ETag to overwrite without version check.
 $tmpBodyFile = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.xml'
 [System.IO.File]::WriteAllText($tmpBodyFile, $policyXml, [System.Text.Encoding]::UTF8)
 
@@ -185,7 +185,7 @@ az rest `
   --method PUT `
   --uri $policyUri `
   --body "@$tmpBodyFile" `
-  --headers "Content-Type=application/vnd.ms-azure-apim.policy.raw+xml" `
+  --headers "Content-Type=application/vnd.ms-azure-apim.policy.raw+xml" "If-Match=*" `
   --output none
 
 Remove-Item $tmpBodyFile -Force
