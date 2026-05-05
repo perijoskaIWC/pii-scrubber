@@ -157,13 +157,17 @@ def tenant_context_inject(req: func.HttpRequest) -> func.HttpResponse:
     """
     Called by APIM inbound policy before routing to the backend LLM.
     Reads tenant/subscription metadata from APIM-injected headers and
-    merges it into the request body as a 'tenant_context' object.
+    returns it as a valid OpenAI system message payload.
 
     Expected APIM-set headers:
         X-Subscription-Id, X-Tenant-Id, X-Product-Name, X-User-Id
 
-    Request body:  any JSON object (typically the LLM request payload)
-    Response body: same object + { "tenant_context": { ... } }
+    Request body: any JSON object (unused except for JSON validation)
+    Response body:
+        {
+            "role": "system",
+            "content": "Tenant context: subscription_id=...; ..."
+        }
     """
     correlation_id = (
         req.headers.get("x-correlation-id")
@@ -182,9 +186,18 @@ def tenant_context_inject(req: func.HttpRequest) -> func.HttpResponse:
 
     try:
         tenant_ctx = _get_tenant_ctx().extract_from_headers(dict(req.headers))
-        enriched = {**body, "tenant_context": tenant_ctx.to_dict()}
+        system_message = {
+            "role": "system",
+            "content": (
+                "Tenant context: "
+                f"subscription_id={tenant_ctx.subscription_id}; "
+                f"tenant_id={tenant_ctx.tenant_id}; "
+                f"product_name={tenant_ctx.product_name or 'unknown'}; "
+                f"user_id={tenant_ctx.user_id or 'unknown'}."
+            ),
+        }
         return func.HttpResponse(
-            json.dumps(enriched),
+            json.dumps(system_message),
             status_code=200,
             mimetype="application/json",
         )

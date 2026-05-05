@@ -1,26 +1,46 @@
 <!--
-  APIM Inbound Policy — PII Scrub + Tenant Context System Message
+  APIM Inbound Policy — PII Scrub + Safe Business Context
   ==========================================================
   Applied at: API or Operation level on the LLM-facing API.
 
   Prerequisites (set up by deploy.ps1):
     Named Value  {{func-scrub-url}}          = https://fun-dev-aigw.azurewebsites.net/api/scrub
     Named Value  {{func-host-key}}           = <function app host key from Key Vault>
+    Named Value  {{llm-workspace}}           = workspace name visible to the LLM
+    Named Value  {{llm-business-unit}}       = business unit visible to the LLM
+    Named Value  {{llm-allowed-actions}}     = comma-separated allowed actions
 
   Flow:
     1. Extract last user message content from OpenAI messages array
     2. POST to /api/scrub  → get scrubbed_text
     3. Replace original content with scrubbed_text in the request body
-    4. Inject APIM subscription metadata as a system message
-    5. Forward the valid OpenAI payload to the backend LLM
+    4. Inject safe business context as a system message
+    5. Forward the valid scrubbed payload to the backend LLM
 -->
 <policies>
   <inbound>
     <base />
 
     <!-- ── Step 1: Capture original body ──────────────────────────────────── -->
-    <set-variable name="originalBody"
-                  value="@(context.Request.Body.As<string>(preserveContent: true))" />
+    <set-variable name="originalBody" value="@{
+      try {
+        return context.Request.Body.As<string>(preserveContent: true) ?? string.Empty;
+      } catch {
+        return string.Empty;
+      }
+    }" />
+
+    <choose>
+      <when condition="@(string.IsNullOrWhiteSpace((string)context.Variables[&quot;originalBody&quot;]))">
+        <return-response>
+          <set-status code="400" reason="Bad Request" />
+          <set-header name="Content-Type" exists-action="override">
+            <value>application/json</value>
+          </set-header>
+          <set-body>{"error":"Request body is required and must contain a valid chat completions payload."}</set-body>
+        </return-response>
+      </when>
+    </choose>
 
     <!-- ── Step 2: Extract last user message content ──────────────────────── -->
     <set-variable name="userContent" value="@{
@@ -41,9 +61,9 @@
 
     <!-- ── Step 3: Call PII Scrub function ────────────────────────────────── -->
     <send-request mode="new"
-                  response-variable-name="scrubResponse"
-                  timeout="15"
-                  ignore-error="false">
+            response-variable-name="scrubResponse"
+            timeout="60"
+            ignore-error="false">
       <set-url>{{func-scrub-url}}?code={{func-host-key}}</set-url>
       <set-method>POST</set-method>
       <set-header name="Content-Type" exists-action="override">
@@ -86,7 +106,7 @@
       }
     }" />
 
-    <!-- ── Step 6: Rebuild body with scrubbed content and tenant system message ── -->
+    <!-- ── Step 6: Rebuild body with scrubbed content and safe system message ── -->
     <set-variable name="scrubbedBody" value="@{
       try {
         var body = Newtonsoft.Json.Linq.JObject.Parse(
@@ -100,15 +120,14 @@
             }
           }
 
-          var tenantMessage = new Newtonsoft.Json.Linq.JObject();
-          tenantMessage[&quot;role&quot;] = &quot;system&quot;;
-          tenantMessage[&quot;content&quot;] =
-            &quot;Tenant context: &quot; +
-            &quot;subscription_id=&quot; + (context.Subscription?.Id ?? &quot;unknown&quot;) + &quot;; &quot; +
-            &quot;tenant_id=&quot; + (context.Product?.Id ?? context.Subscription?.Name ?? &quot;unknown&quot;) + &quot;; &quot; +
-            &quot;product_name=&quot; + (context.Product?.Name ?? &quot;unknown&quot;) + &quot;; &quot; +
-            &quot;user_id=&quot; + (context.User?.Id ?? &quot;unknown&quot;) + &quot;.&quot;;
-          messages.Insert(0, tenantMessage);
+          var contextMessage = new Newtonsoft.Json.Linq.JObject();
+          contextMessage[&quot;role&quot;] = &quot;system&quot;;
+          contextMessage[&quot;content&quot;] =
+            &quot;You are operating in workspace '{{llm-workspace}}'. &quot; +
+            &quot;Business unit: {{llm-business-unit}}. &quot; +
+            &quot;Allowed actions: {{llm-allowed-actions}}. &quot; +
+            &quot;Do not perform actions outside this list.&quot;;
+          messages.Insert(0, contextMessage);
 
           return body.ToString(Newtonsoft.Json.Formatting.None);
         }

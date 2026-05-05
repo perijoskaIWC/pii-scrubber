@@ -1,11 +1,23 @@
 import os
 import logging
-from presidio_analyzer import AnalyzerEngine
+from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
 from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
 from models.schemas import DetectedEntity, ScrubResponse
 
 logger = logging.getLogger(__name__)
+
+US_SSN_PATTERN = Pattern(
+    name="us_ssn",
+    regex=r"\b(?!000|666|9\d\d)\d{3}-?(?!00)\d{2}-?(?!0000)\d{4}\b",
+    score=0.95,
+)
+
+INTERNATIONAL_PHONE_PATTERN = Pattern(
+    name="international_phone",
+    regex=r"(?<!\w)(?:\+\d{1,3}[\s-]?)?(?:\(?\d{2,4}\)?[\s-]?){2,4}\d{2,4}(?!\w)",
+    score=0.95,
+)
 
 ENTITIES_TO_DETECT = [
     "PERSON",
@@ -53,6 +65,20 @@ class PresidioService:
         )
         logger.info("Initializing Presidio engines...")
         self._analyzer = AnalyzerEngine()
+        self._analyzer.registry.add_recognizer(
+            PatternRecognizer(
+                supported_entity="US_SSN",
+                name="CustomSSNRecognizer",
+                patterns=[US_SSN_PATTERN],
+            )
+        )
+        self._analyzer.registry.add_recognizer(
+            PatternRecognizer(
+                supported_entity="PHONE_NUMBER",
+                name="CustomPhoneRecognizer",
+                patterns=[INTERNATIONAL_PHONE_PATTERN],
+            )
+        )
         self._anonymizer = AnonymizerEngine()
         logger.info("Presidio engines ready.")
 

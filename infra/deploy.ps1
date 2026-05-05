@@ -14,6 +14,9 @@ param(
   [string]$ApimName      = 'apim-pilot-elena',
   [string]$ApimRg        = 'rg-apim-openai-pilot',
   [string]$ApiId         = 'openai-api-elena',
+  [string]$WorkspaceName = 'gpt4o-pilot',
+  [string]$BusinessUnit  = 'pilot',
+  [string]$AllowedActions = 'summarize_documents,answer_policy_questions,classify_requests',
   [string]$OperationId   = ''                         # leave empty to apply at API level
 )
 
@@ -68,9 +71,19 @@ Write-Host "  Key Vault    : $keyVaultName"
 Log "Publishing function app code..."
 Push-Location (Split-Path -Parent $ScriptDir)
 try {
+  $pythonExe = Join-Path (Get-Location) ".venv\Scripts\python.exe"
+  if (-not (Test-Path $pythonExe)) {
+    Die "Expected Python 3.11 virtual environment not found at $pythonExe"
+  }
+
+  $env:FUNCTIONS_WORKER_RUNTIME_VERSION = "3.11"
+  $env:languageWorkers__python__defaultExecutablePath = $pythonExe
+
   func azure functionapp publish $functionAppName --python --build remote
   if ($LASTEXITCODE -ne 0) { Die "func publish failed." }
 } finally {
+  Remove-Item Env:FUNCTIONS_WORKER_RUNTIME_VERSION -ErrorAction SilentlyContinue
+  Remove-Item Env:languageWorkers__python__defaultExecutablePath -ErrorAction SilentlyContinue
   Pop-Location
 }
 
@@ -122,7 +135,10 @@ $kvSecretUri     = "https://${keyVaultName}.vault.azure.net/secrets/func-host-ke
 
 $namedValues = @(
   @{ name = "func-scrub-url";          value = $scrubUrl;     secret = $false },
-  @{ name = "func-tenant-context-url"; value = $tenantCtxUrl; secret = $false }
+  @{ name = "func-tenant-context-url"; value = $tenantCtxUrl; secret = $false },
+  @{ name = "llm-workspace";           value = $WorkspaceName; secret = $false },
+  @{ name = "llm-business-unit";       value = $BusinessUnit; secret = $false },
+  @{ name = "llm-allowed-actions";     value = $AllowedActions; secret = $false }
 )
 
 foreach ($nv in $namedValues) {
