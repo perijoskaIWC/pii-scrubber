@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 
 @dataclass
@@ -31,20 +31,4 @@ class ScrubResponse:
                 }
                 for e in self.entities_detected
             ],
-        }
-
-
-@dataclass
-class TenantContext:
-    subscription_id: str
-    tenant_id: str
-    product_name: Optional[str] = None
-    user_id: Optional[str] = None
-
-    def to_dict(self) -> dict:
-        return {
-            "subscription_id": self.subscription_id,
-            "tenant_id": self.tenant_id,
-            "product_name": self.product_name,
-            "user_id": self.user_id,
         }
